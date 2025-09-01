@@ -43,7 +43,7 @@ PROMPT6 = (
     # Robust System Prompt — To-Do Function Router
 """
 You translate a single user message into one function call:
-addTask(description: string), viewTasks(), completeTask(task_id: int), or deleteTask(task_id: int).
+addTask(description: string), viewTasks(), completeTask(task_id: int), deleteTask(task_id: int), or deleteAll().
 
 Output: return only a JSON object like
 {"function":"<one>", "parameters":{...}} — no prose, no code fences.
@@ -58,6 +58,8 @@ completeTask only with an explicit numeric ID (e.g., task 3, #3, 3rd → 3).
 
 deleteTask only with an explicit numeric ID (same parsing as above).
 
+deleteAll only when the user explicitly asks to delete or clear ALL tasks (e.g., "delete all tasks", "clear my list"). Return deleteAll only if the user's intent is clearly to remove every task.
+
 If multiple actions appear, pick the first clear action in reading order. Output exactly one call.
 
 Examples
@@ -69,6 +71,9 @@ You: {"function":"viewTasks","parameters":{}}
 
 User: mark task #3 done
 You: {"function":"completeTask","parameters":{"task_id":3}}
+
+User: delete all my tasks
+You: {"function":"deleteAll","parameters":{}}
 """
 )
 
@@ -340,10 +345,11 @@ def chat_translate_and_execute():
     # Validate tool request
     func = tool_req.get("function")
     params = params
-    if func not in {"addTask", "viewTasks", "completeTask", "deleteTask"}:
+    if func not in {"addTask", "viewTasks", "completeTask", "deleteTask", "deleteAll"}:
         abort(400, description="Unsupported function from model.")
 
     # Dispatch
+    assistant_message = None
     if func == "addTask":
         desc = params.get("description")
         if not isinstance(desc, str) or not desc.strip():
@@ -351,9 +357,20 @@ def chat_translate_and_execute():
         task = build_task(title=desc.strip())  # map 'description' → title for this demo
         TASKS.append(task)
         result = task
+        assistant_message = f"Added task #{task['short_id']}: {task['title']}"
 
     elif func == "viewTasks":
         result = {"items": list(TASKS), "total": len(TASKS)}
+        # Compose a short human-friendly summary (up to 6 items)
+        if not TASKS:
+            assistant_message = "You have no tasks."
+        else:
+            lines = []
+            for t in TASKS[:6]:
+                status = "✓" if t.get("completed") else "·"
+                lines.append(f"#{t.get('short_id')} {t.get('title')} {status}")
+            more = "" if len(TASKS) <= 6 else f"\n...and {len(TASKS)-6} more tasks"
+            assistant_message = "\n".join(lines) + more
 
     elif func == "completeTask":
         try:
@@ -366,6 +383,7 @@ def chat_translate_and_execute():
         TASKS[idx]["completed"] = True
         TASKS[idx]["updated_at"] = utcnow()
         result = TASKS[idx]
+        assistant_message = f"Marked task #{short_id} as completed."
 
     elif func == "deleteTask":
         try:
@@ -379,8 +397,39 @@ def chat_translate_and_execute():
         # Keep short_id values compact after removal
         renumber_short_ids()
         result = {"deleted": True, "short_id": removed.get("short_id")} 
+        assistant_message = f"Deleted task #{removed.get('short_id')} ({removed.get('title')})."
 
-    return jsonify({"tool_request": tool_req, "result": result})
+    elif func == "deleteAll":
+        # destructive operation — be explicit
+        count = len(TASKS)
+        TASKS.clear()
+        renumber_short_ids()
+        result = {"deleted": True, "count": count}
+        assistant_message = f"Deleted all tasks ({count} removed)."
+
+    # Return tool_request + result and a human-friendly assistant message to simplify frontend UX
+    resp_payload = {"tool_request": tool_req, "result": result}
+    if assistant_message is not None:
+        resp_payload["assistant_message"] = assistant_message
+
+    return jsonify(resp_payload)
+
+
+# New: bulk-delete endpoint (DELETE /v1/tasks) with an explicit confirm query param
+@app.delete("/v1/tasks")
+def delete_all_tasks():
+    """Delete all tasks. To avoid accidental mass-deletion require ?confirm=true.
+
+    Returns JSON {"deleted": <count>} with HTTP 200 on success. If ?confirm is not set to
+    a truthy value the request is rejected with 400 and a helpful message.
+    """
+    confirm = (request.args.get("confirm") or "").strip().lower()
+    if confirm not in {"1", "true", "yes", "y"}:
+        abort(400, description="To delete all tasks include ?confirm=true in the request")
+    count = len(TASKS)
+    TASKS.clear()
+    renumber_short_ids()
+    return jsonify({"deleted": count})
 
 
 if __name__ == "__main__":

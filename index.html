@@ -176,6 +176,7 @@
         <button id="clearSearch" type="button" class="clear" title="Clear">✕</button>
       </div>
       <button id="clearCompleted" type="button" class="btn-secondary" disabled>Clear completed</button>
+      <button id="deleteAllBtn" type="button" class="btn-secondary" disabled>Delete all</button>
     </section>
 
     <div class="columns">
@@ -240,6 +241,7 @@
         body: JSON.stringify({ completed })
       }),
       del: (id) => fetch(fullUrl('/v1/tasks/' + encodeURIComponent(id)), { method: 'DELETE' }),
+      delete_all: (confirm=true) => fetch(fullUrl('/v1/tasks?confirm=' + (confirm ? 'true' : 'false')), { method: 'DELETE' }),
       chat: (message) => fetch(fullUrl('/v1/chat'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
@@ -308,6 +310,9 @@
       qs('#count').textContent = `${filtered.length} item${filtered.length!==1?'s':''}`;
       const hasCompleted = tasks.some(t => t.completed);
       qs('#clearCompleted').disabled = !hasCompleted;
+      // Delete all button enabled only when there are tasks
+      const deleteAllBtn = qs('#deleteAllBtn');
+      if (deleteAllBtn) deleteAllBtn.disabled = tasks.length === 0;
 
       if (filtered.length === 0) {
         list.innerHTML = `<div class="empty">${searchTerm ? 'Nothing matches your filters.' : 'No tasks yet.'}</div>`;
@@ -458,6 +463,23 @@
       }
     }
 
+    // Delete all (UI) - requires explicit confirmation
+    async function onDeleteAllClicked() {
+      if (!confirm('Delete ALL tasks? This cannot be undone.')) return;
+      try {
+        const r = await API.delete_all(true);
+        if (!r.ok) {
+          const txt = await r.text();
+          throw new Error(txt || 'delete all failed');
+        }
+        const data = await r.json();
+        showSnackbar(`Deleted ${data.deleted} task${data.deleted!==1?'s':''}.`);
+        await refresh();
+      } catch (e) {
+        showSnackbar('Could not delete all tasks.');
+      }
+    }
+
     // ============================
     // Chat assistant
     // ============================
@@ -505,14 +527,19 @@
           throw new Error(text || 'chat failed');
         }
         const data = await r.json();
-        addMessage('assistant', JSON.stringify(data.tool_request, null, 2), true);
-        addMessage('assistant', summarize(data.tool_request, data.result));
+        // Prefer a human-friendly assistant message if provided by the server
+        if (data.assistant_message) {
+          addMessage('assistant', data.assistant_message);
+        } else if (data.tool_request) {
+          addMessage('assistant', JSON.stringify(data.tool_request, null, 2), true);
+          addMessage('assistant', summarize(data.tool_request, data.result));
+        }
         const fn = data.tool_request && data.tool_request.function;
-        if (fn === 'addTask' || fn === 'completeTask' || fn === 'deleteTask') {
+        if (fn === 'addTask' || fn === 'completeTask' || fn === 'deleteTask' || fn === 'deleteAll') {
           await refresh();
         } else if (fn === 'viewTasks') {
           const lines = (data.result.items || []).map(t => `#${t.short_id} ${t.completed ? '[x]' : '[ ]'} ${t.title}`);
-          if (lines.length) addMessage('assistant', lines.join(''), true);
+          if (lines.length) addMessage('assistant', lines.join('\n'), true);
         }
       } catch (e) {
         showSnackbar('Chat error.');
@@ -530,6 +557,10 @@
       // Add
       qs('#addBtn').addEventListener('click', onAdd);
        qs('#newTitle').addEventListener('keydown', e => { if (e.key === 'Enter') onAdd(); });
+
+      // Delete all
+      const deleteAllBtn = qs('#deleteAllBtn');
+      if (deleteAllBtn) deleteAllBtn.addEventListener('click', onDeleteAllClicked);
 
       // Filters
       qsa('.segmented button').forEach(btn => btn.addEventListener('click', async () => {
