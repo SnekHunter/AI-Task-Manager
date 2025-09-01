@@ -17,12 +17,15 @@ Notes
 """
 from __future__ import annotations
 
-import os, re, json
-from flask import Flask, request, jsonify, url_for, abort
+import os
+import re
+import json
+from flask import Flask, request, jsonify, url_for, abort, send_from_directory
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
+import threading
 
 # -------- OpenAI client (env-driven) ---------------------------------------
 try:
@@ -40,27 +43,31 @@ if OPENAI_API_KEY and OpenAI:
 
 # The system prompt used by the /v1/chat endpoint
 PROMPT6 = (
-    # Robust System Prompt — To-Do Function Router
-"""
+    """
 You translate a single user message into one function call:
 addTask(description: string), viewTasks(), completeTask(task_id: int), deleteTask(task_id: int), or deleteAll().
 
-Output: return only a JSON object like
-{"function":"<one>", "parameters":{...}} — no prose, no code fences.
+Alternatively, for brief in-app conversational replies (greeting, short confirmations, or simple clarification)
+return a JSON object with a single string field "assistant_message" instead of a function, for example:
+{"assistant_message":"Hello! I can help manage your tasks."
+}
 
-Rules:
+Important rules:
+- If the user asks anything outside the Task Manager domain (e.g., general knowledge like "Where is the USA located?"), do NOT attempt to answer with facts. Instead reply with a short assistant_message that politely declines and redirects to task-related help (e.g., "I can only help with managing tasks here.").
+- For task actions, return only a JSON object like
+  {"function":"<one>", "parameters":{...}}  — no prose, no code fences, no extra fields.
+- For chit-chat allowed inside the app (greeting, thanks, short clarifications), return exactly:
+  {"assistant_message": "<short reply>"}
+  — keep the reply brief (<= 140 chars).
 
-addTask when the user asks to add/create/make/“todo: …”. Description = quoted text if present, else the text after the verb (trimmed).
+Rules for mapping language → functions:
+- addTask when the user asks to add/create/make/“todo: …”. Description = quoted text if present, else the text after the verb (trimmed).
+- viewTasks for show/list requests or whenever required info is missing/ambiguous (e.g., no numeric ID).
+- completeTask only with an explicit numeric ID (e.g., task 3, #3, 3rd → 3).
+- deleteTask only with an explicit numeric ID (same parsing as above).
+- deleteAll only when the user explicitly asks to delete or clear ALL tasks (e.g., "delete all tasks", "clear my list"). Return deleteAll only if the user's intent is clearly to remove every task.
 
-viewTasks for show/list requests or whenever required info is missing/ambiguous (e.g., no numeric ID).
-
-completeTask only with an explicit numeric ID (e.g., task 3, #3, 3rd → 3).
-
-deleteTask only with an explicit numeric ID (same parsing as above).
-
-deleteAll only when the user explicitly asks to delete or clear ALL tasks (e.g., "delete all tasks", "clear my list"). Return deleteAll only if the user's intent is clearly to remove every task.
-
-If multiple actions appear, pick the first clear action in reading order. Output exactly one call.
+If multiple actions appear, pick the first clear action in reading order. Output exactly one call or a single assistant_message.
 
 Examples
 User: add 'buy milk'
@@ -69,22 +76,42 @@ You: {"function":"addTask","parameters":{"description":"buy milk"}}
 User: show my tasks
 You: {"function":"viewTasks","parameters":{}}
 
-User: mark task #3 done
-You: {"function":"completeTask","parameters":{"task_id":3}}
+User: hi
+You: {"assistant_message":"Hi — I can help with your tasks. Try: 'add buy milk'."}
 
-User: delete all my tasks
-You: {"function":"deleteAll","parameters":{}}
+User: where is the USA located?
+You: {"assistant_message":"Sorry, I can only help with tasks in this app."}
 """
 )
 
-app = Flask(__name__)
+try:
+    from flask_cors import CORS as _CORS
+except Exception:
+    _CORS = None
+
+# Use Flask static handling: serve files from ./static at /ai-task-manager/static
+app = Flask(__name__, static_folder='static', static_url_path='/ai-task-manager/static')
+# Enable flask-cors if installed; otherwise rely on existing manual headers
+if _CORS:
+    _CORS(app)
+
+# Serve the SPA index at root and /ai-task-manager
+@app.route('/')
+def index():
+    base = os.path.dirname(__file__)
+    return send_from_directory(base, 'index.html')
+
+@app.route('/ai-task-manager')
+@app.route('/ai-task-manager/')
+def ai_index():
+    base = os.path.dirname(__file__)
+    return send_from_directory(base, 'index.html')
 
 # Allow simple CORS for the SPA (handles preflight OPTIONS and adds CORS headers).
-# This avoids adding an external dependency (flask-cors) and allows the index.html
-# (served from file:// or a different origin) to call the API during local dev.
+# Force CORS headers on every response (even when flask-cors is installed) to
+# ensure browser clients never get blocked by missing headers on error paths.
 @app.before_request
 def _handle_options():
-    # Return a short-circuit response for CORS preflight requests
     if request.method == 'OPTIONS':
         resp = app.make_response(('', 200))
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -93,25 +120,41 @@ def _handle_options():
         return resp
 
 @app.after_request
-def _set_cors_headers(response):
+def _ensure_cors_headers(response):
+    # Unconditionally set the common CORS headers so even exception handlers
+    # and responses wrapped by flask-cors cannot omit them.
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response
 
-# In‑memory data store: a simple list of task dicts.
-# Each task has: id (uuid), short_id (int), title, description, due_date, completed, created_at, updated_at
+# In-memory data store
 TASKS: List[Dict[str, Any]] = []
-NEXT_SHORT_ID: int = 1  # incremental numeric id for chat functions
+NEXT_SHORT_ID: int = 1
+# Reentrant lock to protect TASKS / NEXT_SHORT_ID across request threads
+TASKS_LOCK = threading.RLock()
 
+# --- Server-side undo buffer (ephemeral, in-memory) ---
+UNDO_BUFFERS: Dict[str, Dict[str, Any]] = {}
+UNDO_EXPIRY_SECONDS = 60 * 5  # 5 minutes expiry
+
+def snapshot_undo_buffer(items: List[Dict[str, Any]]) -> str:
+    """Store a deep-copy snapshot of items and return a token."""
+    token = str(uuid4())
+    UNDO_BUFFERS[token] = {'created': datetime.now(timezone.utc).timestamp(), 'items': json.loads(json.dumps(items))}
+    return token
+
+def cleanup_undo_buffers() -> None:
+    nowt = datetime.now(timezone.utc).timestamp()
+    expired = [k for k,v in list(UNDO_BUFFERS.items()) if nowt - v.get('created',0) > UNDO_EXPIRY_SECONDS]
+    for k in expired:
+        UNDO_BUFFERS.pop(k, None)
 
 def utcnow() -> str:
-    """Return current time as RFC3339 UTC with trailing 'Z'."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 def parse_bool(value: Optional[str]) -> Optional[bool]:
-    """Parse truthy/falsey query param strings to bool (or None if unspecified)."""
     if value is None:
         return None
     value = value.strip().lower()
@@ -123,7 +166,6 @@ def parse_bool(value: Optional[str]) -> Optional[bool]:
 
 
 def find_task_index(task_id: str) -> int:
-    """Return the list index of the task with the given UUID id, or -1 if not found."""
     for i, t in enumerate(TASKS):
         if t["id"] == task_id:
             return i
@@ -131,114 +173,114 @@ def find_task_index(task_id: str) -> int:
 
 
 def find_task_index_by_short(short_id: int) -> int:
-    """Return the list index of the task with the given short_id (int), or -1."""
     for i, t in enumerate(TASKS):
         if t.get("short_id") == short_id:
             return i
     return -1
 
 
-# ---- Error handling -------------------------------------------------------
 @app.errorhandler(400)
 @app.errorhandler(404)
 @app.errorhandler(500)
 def handle_error(err):
-    """Return a consistent JSON error envelope for 400/404/500."""
     status = getattr(err, "code", 500)
     code = {400: "bad_request", 404: "not_found"}.get(status, "server_error")
     message = getattr(err, "description", str(err))
-    return jsonify({"error": {"code": code, "message": message}}), status
+    resp = jsonify({"error": {"code": code, "message": message}})
+    resp.status_code = status
+    # Ensure CORS headers are present on error responses (prevents browser blocking)
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return resp
 
 
-# ---- Helpers to create/update tasks (reused by chat) ----------------------
+# Helpers
 
 def build_task(title: str, description: str = "", due_date: Optional[str] = None) -> Dict[str, Any]:
     global NEXT_SHORT_ID
-    now = utcnow()
-    task = {
-        "id": str(uuid4()),
-        "short_id": NEXT_SHORT_ID,
-        "title": title.strip(),
-        "description": description or "",
-        "due_date": due_date,   # accept as string; deeper validation is out of scope here
-        "completed": False,
-        "created_at": now,
-        "updated_at": now,
-    }
-    NEXT_SHORT_ID += 1
-    return task
+    # Protect NEXT_SHORT_ID allocation across concurrent requests
+    with TASKS_LOCK:
+        now = utcnow()
+        task = {
+            "id": str(uuid4()),
+            "short_id": NEXT_SHORT_ID,
+            "title": title.strip(),
+            "description": description or "",
+            "due_date": due_date,
+            "completed": False,
+            "created_at": now,
+            "updated_at": now,
+        }
+        NEXT_SHORT_ID += 1
+        return task
 
 
-# ---- Create a task --------------------------------------------------------
+def renumber_short_ids() -> None:
+    """Assign short_id = 1..N based on created_at (oldest first).
+    Uses TASKS_LOCK to make the operation atomic if called externally.
+    """
+    global NEXT_SHORT_ID
+    with TASKS_LOCK:
+        TASKS.sort(key=lambda t: t.get('created_at') or '')
+        for i, t in enumerate(TASKS, start=1):
+            t['short_id'] = i
+        NEXT_SHORT_ID = len(TASKS) + 1
+
+
 @app.post("/v1/tasks")
 def create_task():
-    """Create a new task.
-    Request JSON (title required; description/due_date optional):
-      { "title": "Buy milk", "description": "2L whole milk", "due_date": "2025-09-02T09:00:00Z" }
-    Response: 201 Created with full task JSON, Location header to the resource.
-    """
     data = request.get_json(force=True, silent=True) or {}
-
-    # --- Validation
     if not isinstance(data, dict):
         abort(400, description="Body must be a JSON object")
-
     title = data.get("title")
     if not isinstance(title, str) or not (1 <= len(title.strip()) <= 200):
         abort(400, description="title is required (1..200 chars)")
-
     description = data.get("description") or ""
     if not isinstance(description, str):
         abort(400, description="description must be a string")
-
     due_date = data.get("due_date")
     if due_date is not None and not isinstance(due_date, str):
         abort(400, description="due_date must be an RFC3339 string or omitted")
-
-    # --- Build + persist
     task = build_task(title, description, due_date)
-    TASKS.append(task)
-
+    with TASKS_LOCK:
+        TASKS.append(task)
     resp = jsonify(task)
     resp.status_code = 201
-    # Provide Location for the newly created resource (single-item GET implemented below)
     resp.headers["Location"] = url_for("get_task", task_id=task['id'], _external=False)
     return resp
 
 
-# ---- List tasks -----------------------------------------------------------
 @app.get("/v1/tasks")
 def get_tasks():
-    """Return tasks with optional filtering, sorting, and basic pagination."""
-    items = list(TASKS)  # shallow copy for manipulation
-
-    # --- Filtering by completion state (if provided)
+    items = list(TASKS)
     completed = parse_bool(request.args.get("completed"))
     if completed is not None:
         items = [t for t in items if t.get("completed") is completed]
 
-    # --- Sorting (default newest first)
-    sort = request.args.get("sort", "-created_at")
+    # --- Sorting (default by numeric short_id ascending so UI shows 1..N)
+    sort = request.args.get("sort", "short_id")
     reverse = sort.startswith("-")
     key = sort.lstrip("-")
-    if key not in {"created_at", "due_date"}:
-        key = "created_at"
-    items.sort(key=lambda t: t.get(key) or "", reverse=reverse)
+    if key not in {"created_at", "due_date", "short_id", "id"}:
+        key = "short_id"
 
-    # --- Pagination
+    # Use numeric sort for short_id, string sort for id/timestamps
+    if key == "short_id":
+        items.sort(key=lambda t: int(t.get("short_id") or 0), reverse=reverse)
+    else:
+        items.sort(key=lambda t: (t.get(key) or ""), reverse=reverse)
+
     try:
         limit = max(1, min(int(request.args.get("limit", 50)), 200))
         offset = max(0, int(request.args.get("offset", 0)))
     except ValueError:
         abort(400, description="limit/offset must be integers")
-
     total = len(items)
-    items = items[offset : offset + limit]
-
+    items = items[offset: offset + limit]
     return jsonify({"items": items, "page": {"limit": limit, "offset": offset, "total": total}})
 
 
-# ---- Get single task -----------------------------------------------------
 @app.get("/v1/tasks/<task_id>")
 def get_task(task_id: str):
     idx = find_task_index(task_id)
@@ -247,191 +289,315 @@ def get_task(task_id: str):
     return jsonify(TASKS[idx])
 
 
-# ---- Mark task as complete/incomplete (idempotent) ------------------------
 @app.patch("/v1/tasks/<task_id>")
 def patch_task(task_id: str):
-    """Toggle completion via UUID path (primary API). Body must include 'completed'."""
     idx = find_task_index(task_id)
     if idx == -1:
         abort(404, description="task not found")
-
     data = request.get_json(force=True, silent=True) or {}
     if not isinstance(data, dict) or "completed" not in data:
         abort(400, description="Body must include 'completed': true|false")
-
-    TASKS[idx]["completed"] = bool(data["completed"])  # coercion to bool
+    TASKS[idx]["completed"] = bool(data["completed"])
     TASKS[idx]["updated_at"] = utcnow()
     return jsonify(TASKS[idx])
 
 
-# ---- Delete a task --------------------------------------------------------
 @app.delete("/v1/tasks/<task_id>")
 def delete_task(task_id: str):
     idx = find_task_index(task_id)
     if idx == -1:
         abort(404, description="task not found")
-    TASKS.pop(idx)
-    # Re-number remaining tasks so short_id values remain compact (1..N)
-    renumber_short_ids()
-    return ("", 204)
+    with TASKS_LOCK:
+        removed = TASKS.pop(idx)
+        renumber_short_ids()
+        # snapshot removed item so client can request server-side restore
+        token = snapshot_undo_buffer([removed])
+    return jsonify({'deleted': 1, 'short_id': removed.get('short_id'), 'undo_token': token})
 
 
-def renumber_short_ids() -> None:
-    """Ensure short_id values are sequential (1..N) and reset NEXT_SHORT_ID accordingly.
+@app.delete("/v1/tasks")
+def delete_all_tasks():
+    """Delete all tasks. Requires ?confirm=true to delete all tasks"""
+    confirm = parse_bool(request.args.get("confirm"))
+    if not confirm:
+        abort(400, description="Missing confirm=true to delete all tasks")
+    with TASKS_LOCK:
+        deleted = len(TASKS)
+        if deleted == 0:
+            return jsonify({"deleted": 0})
+        before = list(TASKS)
+        TASKS.clear()
+        renumber_short_ids()
+        token = snapshot_undo_buffer(before)
+    return jsonify({"deleted": deleted, 'undo_token': token})
 
-    Call this after any operation that removes or reorders tasks so chat numeric IDs remain
-    compact and predictable.
+
+@app.post('/v1/undo/restore')
+def undo_restore():
+    """Restore deleted items either by providing { token: <token> } (created by delete calls)
+    or by posting { items: [...] } containing full task objects. Restored items will
+    preserve their provided fields where possible. Returns the restored items.
     """
-    global NEXT_SHORT_ID
-    for i, t in enumerate(TASKS, start=1):
-        t["short_id"] = i
-    NEXT_SHORT_ID = len(TASKS) + 1
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get('token')
+    items = data.get('items')
+    # garbage collect expired buffers
+    cleanup_undo_buffers()
+    if token:
+        buf = UNDO_BUFFERS.pop(token, None)
+        if not buf:
+            return jsonify({'error': 'token not found or expired'}), 404
+        items = buf.get('items', [])
+    if not items:
+        return jsonify({'error': 'no items to restore'}), 400
+    restored = []
+    with TASKS_LOCK:
+        existing_ids = {t['id'] for t in TASKS}
+        for it in items:
+            # ensure unique id
+            if not it.get('id') or it.get('id') in existing_ids:
+                it['id'] = str(uuid4())
+            # defensive defaults
+            if not it.get('created_at'):
+                it['created_at'] = utcnow()
+            TASKS.append({
+                'id': it['id'],
+                'short_id': it.get('short_id'),
+                'title': it.get('title') or it.get('description') or '',
+                'description': it.get('description',''),
+                'due_date': it.get('due_date'),
+                'completed': bool(it.get('completed', False)),
+                'created_at': it.get('created_at'),
+                'updated_at': utcnow(),
+            })
+        renumber_short_ids()
+        restored = TASKS[-len(items):]
+    return jsonify({'restored': len(restored), 'items': restored})
 
 
-# ---- Chat translator endpoint --------------------------------------------
 @app.post("/v1/chat")
 def chat_translate_and_execute():
-    """Translate a natural-language command into a function call, then execute it.
-    Request JSON: { "message": "string" }
-    Response JSON: { "tool_request": {..}, "result": <varies> }
-
-    The model is instructed (via PROMPT6) to output ONLY a JSON object like:
-      {"function": "addTask", "parameters": {"description": "buy milk"}}
-    """
-    if client is None:
-        # Service not implemented without OpenAI configured
-        abort(501, description="OpenAI client not initialized. Set OPENAI_API_KEY and install openai.")
-
     data = request.get_json(force=True, silent=True) or {}
     user_text = (data.get("message") or "").strip()
     if not user_text:
         abort(400, description="'message' is required")
 
-    # Call the model
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": PROMPT6},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0,
-        )
-        raw = resp.choices[0].message.content or ""
-    except Exception as e:
-        abort(500, description=f"OpenAI error: {e}")
-
-    # Extract JSON (strip optional code fences)
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n", "", text)
-        text = re.sub(r"```\s*$", "", text)
-    try:
-        tool_req = json.loads(text)
-    except Exception:
-        abort(500, description="Model did not return valid JSON.")
-    
-    # Basic schema checks for safety
-    if not isinstance(tool_req, dict):
-        abort(500, description="Model output is not a JSON object.")
-    if "function" not in tool_req or not isinstance(tool_req.get("function"), str):
-        abort(500, description="Model JSON missing 'function' string.")
-    params = tool_req.get("parameters", {})
-    if params is None:
-        params = {}
-    if not isinstance(params, dict):
-        abort(500, description="Model 'parameters' must be an object.")
-
-    # Validate tool request
-    func = tool_req.get("function")
-    params = params
-    if func not in {"addTask", "viewTasks", "completeTask", "deleteTask", "deleteAll"}:
-        abort(400, description="Unsupported function from model.")
-
-    # Dispatch
-    assistant_message = None
-    if func == "addTask":
-        desc = params.get("description")
-        if not isinstance(desc, str) or not desc.strip():
-            abort(400, description="addTask.description must be a non-empty string")
-        task = build_task(title=desc.strip())  # map 'description' → title for this demo
-        TASKS.append(task)
-        result = task
-        assistant_message = f"Added task #{task['short_id']}: {task['title']}"
-
-    elif func == "viewTasks":
-        result = {"items": list(TASKS), "total": len(TASKS)}
-        # Compose a short human-friendly summary (up to 6 items)
-        if not TASKS:
-            assistant_message = "You have no tasks."
+    # --- Lightweight local parsing for common intents
+    # Multi-add: prefer comma-separated lists; only split on 'and' when verbs repeat
+    m_multi = re.match(r'^(?:add|buy|create|todo)\b[\s:\-]*(.+)$', user_text, flags=re.I)
+    if m_multi:
+        body = m_multi.group(1)
+        parts = []
+        # If commas present, use them as separators
+        if ',' in body:
+            parts = [p.strip() for p in body.split(',') if p.strip()]
         else:
-            lines = []
-            for t in TASKS[:6]:
-                status = "✓" if t.get("completed") else "·"
-                lines.append(f"#{t.get('short_id')} {t.get('title')} {status}")
-            more = "" if len(TASKS) <= 6 else f"\n...and {len(TASKS)-6} more tasks"
-            assistant_message = "\n".join(lines) + more
+            # count verb occurrences to safely decide whether 'and' separates items
+            verbs = re.findall(r'\b(?:buy|add|get|purchase|grab)\b', body, flags=re.I)
+            if len(verbs) > 1 and re.search(r'\band\b', body, flags=re.I):
+                # Use inline (?i) flag to make the split case-insensitive
+                parts = re.split(r'(?i)\s*(?:and)\s*', body)
+            else:
+                parts = [body]
 
-    elif func == "completeTask":
+        added = []
+        for p in parts:
+            item = re.sub(r'^(?:buy|add|get|purchase|grab)\b\s*', '', p, flags=re.I).strip()
+            item = item.strip(' "\'')
+            if not item:
+                continue
+            task = build_task(title=item)
+            with TASKS_LOCK:
+                TASKS.append(task)
+            added.append(task)
+        if added:
+            renumber_short_ids()
+            resp_payload = {
+                "tool_request": {"function": "addTask", "parameters": {"description": user_text}},
+                "result": {"added": added},
+                "assistant_message": f"Added {len(added)} tasks."
+            }
+            return jsonify(resp_payload)
+    # Remove-by-name: "remove milk" or "delete milk"
+    m_remove = re.match(r'^(?:remove|delete|clear)\b[\s:\-]*(.+)$', user_text, flags=re.I)
+    if m_remove:
+        name = m_remove.group(1).strip()
+        # If the user replied with a plain number like "4" or "#4" (allow trailing punctuation), treat it as a short_id
+        # Require the entire name to be a numeric token (optionally with '#' and punctuation) to avoid accidental matches
+        if re.match(r'^\s*#?\s*\d+\s*[.!?]?\s*$', name):
+            m_num = re.search(r'(\d+)', name)
+        else:
+            m_num = None
+        if m_num:
+            sid = int(m_num.group(1))
+            idx = find_task_index_by_short(sid)
+            if idx == -1:
+                return jsonify({"assistant_message": f"No task found with number {sid}."})
+            with TASKS_LOCK:
+                deleted = TASKS.pop(idx)
+                renumber_short_ids()
+                token = snapshot_undo_buffer([deleted])
+            resp_payload = {
+                "tool_request": {"function": "deleteTask", "parameters": {"task_id": sid}},
+                "result": {"deleted": deleted, "short_id": deleted.get('short_id')},
+                "undo_token": token,
+                "assistant_message": f"Removed task '{deleted.get('title')}'."
+            }
+            return jsonify(resp_payload)
+
+        # collect all matching tasks (case-insensitive substring match in title or description)
+        matches = [t for t in list(TASKS) if name.lower() in (t.get('title','') + ' ' + t.get('description','')).lower()]
+        if not matches:
+            return jsonify({"assistant_message": f"No tasks found matching '{name}'."})
+        if len(matches) == 1:
+            # single exact/unique match — delete it
+            to_del = matches[0]
+            with TASKS_LOCK:
+                # locate by id and remove
+                for i, t in enumerate(TASKS):
+                    if t['id'] == to_del['id']:
+                        deleted = TASKS.pop(i)
+                        renumber_short_ids()
+                        token = snapshot_undo_buffer([deleted])
+                        resp_payload = {
+                            "tool_request": {"function": "deleteTask", "parameters": {"task_id": deleted.get("short_id")}},
+                            "result": {"deleted": deleted, "short_id": deleted.get('short_id')},
+                            "undo_token": token,
+                            "assistant_message": f"Removed task '{deleted.get('title')}'."
+                        }
+                        return jsonify(resp_payload)
+            # fallthrough if something odd happened
+            return jsonify({"assistant_message": "Could not delete the task."}), 500
+        # multiple matches -> ask user to clarify which one to delete
+        options = [{"short_id": m.get('short_id'), "title": m.get('title')} for m in matches]
+        # present numbered choices so the user can answer e.g. 'delete 3' or 'mark 3 as complete'
+        return jsonify({
+            "assistant_message": f"I found multiple tasks matching '{name}'. Which one should I delete? Reply with the task number (e.g. 'delete 3').",
+            "choices": options
+        })
+
+    # --- Complete-by commands: numbers, ranges, 'all', or name-based with disambiguation
+    # Examples handled: "complete 2,3,4", "mark all as complete", "mark 1 as complete", "mark milk as complete"
+    m_complete = re.match(r'^(?:complete|mark|set)\b[\s:\-]*(.+?)\s*(?:as\s+complete|completed|done)?$', user_text, flags=re.I)
+    if m_complete:
+        target = m_complete.group(1).strip()
+        # 'all' shortcut
+        if re.search(r'\ball\b', target, flags=re.I):
+            updated = []
+            with TASKS_LOCK:
+                for t in TASKS:
+                    if not t.get('completed'):
+                        t['completed'] = True
+                        t['updated_at'] = utcnow()
+                        updated.append(t)
+            if not updated:
+                return jsonify({"assistant_message": "All tasks are already marked complete."})
+            return jsonify({
+                "tool_request": {"function": "completeTask", "parameters": {"task_ids": "all"}},
+                "result": {"updated": updated},
+                "assistant_message": f"Marked {len(updated)} task(s) as complete." 
+            })
+
+        # parse numeric IDs and ranges (e.g. '2,3,5' or '2-4')
+        ids = set()
+        # expand ranges like 2-4
+        for a,b in re.findall(r'(\d+)\s*-\s*(\d+)', target):
+            try:
+                a_i = int(a); b_i = int(b)
+                if a_i <= b_i:
+                    for n in range(a_i, b_i+1):
+                        ids.add(n)
+            except Exception:
+                pass
+        # individual digits
+        for n in re.findall(r'\b(\d+)\b', target):
+            try:
+                ids.add(int(n))
+            except Exception:
+                pass
+        if ids:
+            updated = []
+            not_found = []
+            with TASKS_LOCK:
+                for sid in sorted(ids):
+                    idx = find_task_index_by_short(sid)
+                    if idx == -1:
+                        not_found.append(sid)
+                        continue
+                    TASKS[idx]['completed'] = True
+                    TASKS[idx]['updated_at'] = utcnow()
+                    updated.append(TASKS[idx])
+            msg_parts = []
+            if updated:
+                msg_parts.append(f"Marked {len(updated)} task(s) as complete")
+            if not_found:
+                msg_parts.append(f"Could not find tasks: {', '.join(map(str, not_found))}")
+            return jsonify({
+                "tool_request": {"function": "completeTask", "parameters": {"task_ids": sorted(list(ids))}},
+                "result": {"updated": updated, "not_found": not_found},
+                "assistant_message": "; ".join(msg_parts) if msg_parts else "No changes made."
+            })
+
+        # otherwise treat target as a name/phrase and search
+        name = target
+        matches = [t for t in list(TASKS) if name.lower() in (t.get('title','') + ' ' + t.get('description','')).lower()]
+        if not matches:
+            return jsonify({"assistant_message": f"No tasks found matching '{name}'."})
+        if len(matches) == 1:
+            # single match -> mark it complete
+            with TASKS_LOCK:
+                for i, t in enumerate(TASKS):
+                    if t['id'] == matches[0]['id']:
+                        TASKS[i]['completed'] = True
+                        TASKS[i]['updated_at'] = utcnow()
+                        return jsonify({
+                            "tool_request": {"function": "completeTask", "parameters": {"task_id": TASKS[i].get('short_id')}},
+                            "result": {"updated": TASKS[i]},
+                            "assistant_message": f"Marked '{TASKS[i].get('title')}' as complete."
+                        })
+            return jsonify({"assistant_message": "Could not update the task."}), 500
+        # multiple matches -> ask which one to mark
+        options = [{"short_id": m.get('short_id'), "title": m.get('title')} for m in matches]
+        return jsonify({
+            "assistant_message": f"I found multiple tasks matching '{name}'. Which one should I mark as complete? Reply with the task number (e.g. 'mark 3 as complete').",
+            "choices": options
+        })
+
+    # Fallback: if no local parser matched, attempt to use the configured OpenAI translator
+    # or return a short assistant_message directing the user to task commands.
+    if client:
         try:
-            short_id = int(params.get("task_id"))
+            # Call the OpenAI chat completion translator (SDK may vary; wrap defensively)
+            resp = client.chat.completions.create(
+                model=MODEL or "gpt-4o-mini",
+                messages=[{"role": "system", "content": PROMPT6}, {"role": "user", "content": user_text}],
+                max_tokens=400,
+            )
+            # Extract assistant content (SDK shape may vary); try common access patterns
+            content = None
+            try:
+                # new-style: resp.choices[0].message.content
+                content = resp.choices[0].message.content
+            except Exception:
+                try:
+                    content = resp.choices[0]['message']['content']
+                except Exception:
+                    content = None
+            if content:
+                try:
+                    parsed = json.loads(content)
+                    return jsonify(parsed)
+                except Exception:
+                    return jsonify({"assistant_message": "Sorry, I couldn't interpret the assistant response. Try a simple task command like 'add buy milk'."})
+            else:
+                return jsonify({"assistant_message": "The AI translator returned an unexpected response. Try again or use direct commands like 'add buy milk'."})
         except Exception:
-            abort(400, description="completeTask.task_id must be an integer")
-        idx = find_task_index_by_short(short_id)
-        if idx == -1:
-            abort(404, description="task not found (by short_id)")
-        TASKS[idx]["completed"] = True
-        TASKS[idx]["updated_at"] = utcnow()
-        result = TASKS[idx]
-        assistant_message = f"Marked task #{short_id} as completed."
+            # If the OpenAI call fails, fall through to a friendly static reply
+            return jsonify({"assistant_message": "The AI translator is unavailable. Try direct commands like 'add buy milk'."}), 503
 
-    elif func == "deleteTask":
-        try:
-            short_id = int(params.get("task_id"))
-        except Exception:
-            abort(400, description="deleteTask.task_id must be an integer")
-        idx = find_task_index_by_short(short_id)
-        if idx == -1:
-            abort(404, description="task not found (by short_id)")
-        removed = TASKS.pop(idx)
-        # Keep short_id values compact after removal
-        renumber_short_ids()
-        result = {"deleted": True, "short_id": removed.get("short_id")} 
-        assistant_message = f"Deleted task #{removed.get('short_id')} ({removed.get('title')})."
+    # No AI client configured — return a simple helpful assistant message
+    return jsonify({"assistant_message": "Hi — I can help manage your tasks. Try: 'add buy milk'."})
 
-    elif func == "deleteAll":
-        # destructive operation — be explicit
-        count = len(TASKS)
-        TASKS.clear()
-        renumber_short_ids()
-        result = {"deleted": True, "count": count}
-        assistant_message = f"Deleted all tasks ({count} removed)."
-
-    # Return tool_request + result and a human-friendly assistant message to simplify frontend UX
-    resp_payload = {"tool_request": tool_req, "result": result}
-    if assistant_message is not None:
-        resp_payload["assistant_message"] = assistant_message
-
-    return jsonify(resp_payload)
-
-
-# New: bulk-delete endpoint (DELETE /v1/tasks) with an explicit confirm query param
-@app.delete("/v1/tasks")
-def delete_all_tasks():
-    """Delete all tasks. To avoid accidental mass-deletion require ?confirm=true.
-
-    Returns JSON {"deleted": <count>} with HTTP 200 on success. If ?confirm is not set to
-    a truthy value the request is rejected with 400 and a helpful message.
-    """
-    confirm = (request.args.get("confirm") or "").strip().lower()
-    if confirm not in {"1", "true", "yes", "y"}:
-        abort(400, description="To delete all tasks include ?confirm=true in the request")
-    count = len(TASKS)
-    TASKS.clear()
-    renumber_short_ids()
-    return jsonify({"deleted": count})
-
-
-if __name__ == "__main__":
-    # Debug is ON for developer convenience. Disable in production.
-    app.run(debug=True)
+if __name__ == '__main__':
+    # Default to localhost:5000 to match the SPA development expectation
+    app.run(host='127.0.0.1', port=5000, debug=True)

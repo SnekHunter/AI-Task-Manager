@@ -1,0 +1,139 @@
+/* Design tokens (light/dark) */
+:root{
+  --bg:#fbfbfc;
+  --surface:#ffffff;
+  --text:#0b1220;
+  --muted:#4b5563;
+  --primary:#2563eb;
+  --ok:#059669;
+  --warn:#b45309;
+  --danger:#dc2626;
+  --ring:rgba(37,99,235,0.28);
+  --shadow:0 8px 30px rgba(2,6,23,0.06);
+  --radius:12px;
+  --space:8px;
+}
+html[data-theme="dark"]{
+  --bg:#0b1220;
+  --surface:#0f1724;
+  --text:#e6eef8;
+  --muted:#9aa6bb;
+  --primary:#60a5fa;
+  --ok:#34d399;
+  --warn:#fbbf24;
+  --danger:#fb7185;
+  --ring:rgba(96,165,250,0.22);
+  --shadow:0 10px 30px rgba(2,6,23,0.6);
+}
+
+/* Base */
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;font:16px/1.55 Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:var(--bg);color:var(--text)}
+:focus-visible{outline:3px solid var(--ring);outline-offset:3px}
+button:focus-visible,input:focus-visible{border-radius:8px}
+
+.container{max-width:880px;margin:0 auto;padding:calc(var(--space)*3) var(--space)}
+
+/* Top bar */
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;background:var(--bg);border-bottom:1px solid rgba(0,0,0,.06);backdrop-filter:saturate(180%) blur(6px);padding:calc(var(--space)*2) var(--space)}
+.brand{font-weight:800;font-size:18px;letter-spacing:0.2px}
+.icon-btn{height:36px;min-width:36px;padding:0 10px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(0,0,0,.08);background:var(--surface);color:var(--text);box-shadow:var(--shadow);cursor:pointer}
+.icon-btn:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+
+/* Card */
+.card{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);border:1px solid rgba(2,6,23,0.04)}
+
+/* Composer */
+.card.controls{display:flex;flex-direction:column;gap:calc(var(--space)*0.5);padding:calc(var(--space)*0.75)}
+.controls-top{display:flex;gap:var(--space);align-items:center;width:100%}
+.composer{display:grid;grid-template-columns:1fr auto;gap:var(--space)}
+.input{height:48px;padding:0 14px;border-radius:10px;border:1px solid rgba(2,6,23,0.06);background:var(--surface);color:var(--text)}
+html[data-theme="dark"] .input{background:rgba(255,255,255,0.03);border-color:rgba(255,255,255,0.06)}
+.input:focus{outline:2px solid var(--ring);outline-offset:2px}
+
+/* Buttons */
+.btn-primary{height:48px;padding:0 18px;border-radius:10px;border:none;cursor:pointer;background:var(--primary);color:#fff;font-weight:700;box-shadow:0 6px 18px rgba(37,99,235,0.12)}
+.btn-primary:disabled{opacity:.6;cursor:not-allowed}
+#searchToggle{height:48px;padding:0 18px;border-radius:10px;border:none;background:var(--primary);color:#fff;font-weight:700;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 6px 18px rgba(37,99,235,0.12)}
+#searchToggle:disabled{opacity:.6}
+
+.btn-secondary{height:40px;min-width:120px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;border:1px solid rgba(2,6,23,0.06);background:transparent;color:var(--text);cursor:pointer}
+.btn-secondary:disabled{opacity:.5}
+
+/* Controls bottom row */
+.controls-bottom{display:flex;align-items:center;justify-content:space-between;gap:var(--space);width:100%;padding-top:2px}
+.segmented{display:inline-flex;background:rgba(0,0,0,.05);border-radius:999px;padding:3px}
+html[data-theme="dark"] .segmented{background:rgba(255,255,255,0.06)}
+.segmented button{border:none;background:transparent;padding:8px 12px;border-radius:999px;cursor:pointer;color:var(--muted)}
+.segmented button.active{background:var(--bg);color:var(--text);box-shadow:var(--shadow)}
+
+/* Search — always visible */
+.search{position:relative;display:flex;align-items:center;gap:8px}
+.search input{width:100%;height:40px;border-radius:999px;padding:0 36px 0 12px;border:1px solid rgba(0,0,0,.08);background:var(--surface);color:var(--text);transition:opacity .18s ease}
+.search .clear{height:28px;width:28px;border-radius:999px;border:none;background:transparent;color:var(--muted);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .18s ease}
+.search .clear.visible{opacity:1;pointer-events:auto}
+
+/* List */
+#listCard{position:relative}
+.list{margin-top:var(--space);padding:var(--space)}
+.list-count{position:absolute;right:calc(var(--space)*1);bottom:0;color:var(--muted);font-size:13px;padding:6px 8px;border-radius:8px;pointer-events:none;background:transparent;opacity:0.95}
+.row{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:10px;border-radius:10px}
+.row:hover{background:rgba(0,0,0,.03)}
+html[data-theme="dark"] .row:hover{background:rgba(255,255,255,.03)}
+.title{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.title.completed{text-decoration:line-through;opacity:.7}
+.row-actions{display:inline-flex;gap:6px}
+
+.checkbox{appearance:none;width:20px;height:20px;border-radius:6px;border:1.5px solid rgba(2,6,23,0.18);display:grid;place-content:center;cursor:pointer;background:transparent}
+.checkbox:checked{background:var(--primary);border-color:var(--primary)}
+.checkbox:checked::after{content:'✔';color:#fff;font-size:12px;line-height:1}
+
+/* Snackbar, empty, skeleton */
+.snackbar{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--surface);color:var(--text);border-radius:999px;box-shadow:var(--shadow);padding:10px 14px;display:none;align-items:center;gap:12px}
+.snackbar.show{display:inline-flex}
+.snackbar button{border:none;background:transparent;color:var(--primary);cursor:pointer;font-weight:600}
+.empty{padding:24px;text-align:center;color:var(--muted)}
+.skeleton{height:56px;border-radius:10px;background:linear-gradient(90deg,rgba(0,0,0,.06),rgba(0,0,0,.12),rgba(0,0,0,.06));background-size:200% 100%;animation:shimmer 1.2s infinite}
+html[data-theme="dark"] .skeleton{background:linear-gradient(90deg,rgba(255,255,255,.06),rgba(255,255,255,.12),rgba(255,255,255,.06))}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* Chat */
+.chat{padding:var(--space);margin-top:var(--space);display:grid;gap:var(--space)}
+.chat-messages{max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:var(--space)}
+.chat-row{display:flex}
+.chat-row .bubble{padding:12px 14px;border-radius:12px;border:1px solid rgba(2,6,23,0.04);background:var(--bg);color:var(--text)}
+.chat-row.user{justify-content:flex-end}
+.chat-row.user .bubble{background:var(--primary);color:#fff}
+.chat-row.assistant .bubble{background:var(--surface)}
+.chat-composer{display:grid;grid-template-columns:1fr auto;gap:var(--space)}
+.chat-title{margin:0 0 4px 0;font-size:15px;font-weight:700;color:var(--text)}
+.chat-hint{font-size:12px;color:var(--muted)}
+
+/* Animations */
+.row.item-new{animation:pop-in 360ms cubic-bezier(.2,.9,.2,1)}
+@keyframes pop-in{from{transform:scale(.98);opacity:0}to{transform:scale(1);opacity:1}}
+.row.item-removed{animation:fade-out 360ms ease forwards}
+@keyframes fade-out{to{opacity:0;transform:translateX(12px) scale(.98);height:0;margin:0;padding:0}}
+
+/* Responsive tweaks */
+@media (max-width:880px){.columns{grid-template-columns:1fr}.search{width:100%}}
+
+/* Clean up: hide original meta count when list-count is used */
+.meta #count{display:none}
+
+/* Task number pill (badge) */
+.pill{display:inline-block;font-size:12px;padding:4px 8px;margin-right:8px;border-radius:999px;background:rgba(2,6,23,0.04);color:var(--muted);font-weight:600}
+html[data-theme="dark"] .pill{background:rgba(255,255,255,0.04);color:var(--muted)}
+
+/* Chat popup and floating button */
+.open-chat-btn{position:fixed;right:18px;bottom:18px;z-index:60;padding:12px 16px;border-radius:999px;background:var(--primary);color:#fff;border:none;box-shadow:var(--shadow);cursor:pointer}
+.chat-popup{position:fixed;right:18px;bottom:72px;width:360px;max-width:92vw;z-index:70;transition:transform .18s ease,opacity .18s ease}
+.chat-popup.hidden{opacity:0;transform:translateY(8px) scale(.98);pointer-events:none}
+.chat-popup .card.chat{padding:0;overflow:hidden}
+.chat-popup .chat-messages{max-height:320px;overflow:auto;padding:12px}
+.chat-popup .chat-composer{padding:12px}
+
+/* small helper for the close button inside the popup */
+.icon-btn-mini{border:none;background:transparent;cursor:pointer;padding:6px;border-radius:8px;color:var(--muted)}
+.icon-btn-mini:hover{background:rgba(0,0,0,.04)}
