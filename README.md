@@ -1,6 +1,3 @@
-Here’s a drop-in, developer-friendly `README.md` you can paste into your repo. It keeps the technical details, adds a crisp quick-start, concrete API examples, and clarifies the chat assistant behavior.
-
-(Basis: verified against your repo’s current README and layout.) ([GitHub][1])
 
 ---
 
