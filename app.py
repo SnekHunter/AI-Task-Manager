@@ -384,9 +384,10 @@ def chat_translate_and_execute():
 
     # --- Lightweight local parsing for common intents
     # Multi-add: prefer comma-separated lists; only split on 'and' when verbs repeat
-    m_multi = re.match(r'^(?:add|buy|create|todo)\b[\s:\-]*(.+)$', user_text, flags=re.I)
+    m_multi = re.match(r'^(?P<verb>add|buy|create|todo)\b[\s:\-]*(.+)$', user_text, flags=re.I)
     if m_multi:
-        body = m_multi.group(1)
+        leading_verb = m_multi.group('verb')
+        body = m_multi.group(2)
         parts = []
         # If commas present, use them as separators
         if ',' in body:
@@ -402,7 +403,13 @@ def chat_translate_and_execute():
 
         added = []
         for p in parts:
-            item = re.sub(r'^(?:buy|add|get|purchase|grab)\b\s*', '', p, flags=re.I).strip()
+            # Only remove a leading verb in the part if it matches the original verb the user used.
+            # This preserves descriptions like 'buy milk' when the user said 'add buy milk'.
+            if re.match(fr'^\s*{leading_verb}\b', p, flags=re.I):
+                item = re.sub(fr'^(?:{leading_verb})\b\s*', '', p, flags=re.I).strip()
+            else:
+                # keep the part verb if it differs from the command verb
+                item = p.strip()
             item = item.strip(' "\'')
             if not item:
                 continue
@@ -422,6 +429,25 @@ def chat_translate_and_execute():
     m_remove = re.match(r'^(?:remove|delete|clear)\b[\s:\-]*(.+)$', user_text, flags=re.I)
     if m_remove:
         name = m_remove.group(1).strip()
+
+        # If the user explicitly asked to delete all tasks, perform the operation
+        # and return an undo token. This avoids treating 'all' as a literal task name.
+        if re.search(r'\b(all|every|everything)\b', name, flags=re.I):
+            with TASKS_LOCK:
+                deleted = len(TASKS)
+                if deleted == 0:
+                    return jsonify({"assistant_message": "No tasks to delete."})
+                before = list(TASKS)
+                TASKS.clear()
+                renumber_short_ids()
+                token = snapshot_undo_buffer(before)
+            return jsonify({
+                "tool_request": {"function": "deleteAll", "parameters": {}},
+                "result": {"deleted": deleted},
+                "undo_token": token,
+                "assistant_message": f"Deleted {deleted} task(s)."
+            })
+
         # If the user replied with a plain number like "4" or "#4" (allow trailing punctuation), treat it as a short_id
         # Require the entire name to be a numeric token (optionally with '#' and punctuation) to avoid accidental matches
         if re.match(r'^\s*#?\s*\d+\s*[.!?]?\s*$', name):

@@ -108,7 +108,7 @@ html[data-theme="dark"] .skeleton{background:linear-gradient(90deg,rgba(255,255,
 .chat-row.assistant .bubble{background:var(--surface)}
 .chat-composer{display:grid;grid-template-columns:1fr auto;gap:var(--space)}
 .chat-title{margin:0 0 4px 0;font-size:15px;font-weight:700;color:var(--text)}
-.chat-hint{font-size:12px;color:var(--muted)}
+.chat-hint{font-size:12px;color:var(--muted);text-align:center;padding:6px 0;margin:0;width:100%;}
 
 /* Animations */
 .row.item-new{animation:pop-in 360ms cubic-bezier(.2,.9,.2,1)}
