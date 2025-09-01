@@ -338,13 +338,9 @@
             const updated = await r.json();
             const idx = tasks.findIndex(x => x.id === updated.id);
             if (idx !== -1) tasks[idx] = updated;
-            // If current filter hides this task now, re-render to remove it
-            if ((filter === 'active' && updated.completed) || (filter === 'completed' && !updated.completed)) {
-              render();
-            } else {
-              // Otherwise update row UI only
-              row.querySelector('.title').classList.toggle('completed', updated.completed);
-            }
+            // Always re-render after server confirms update so derived UI (buttons, counts)
+            // stay in sync (clear-completed, delete-all, counts, filters).
+            render();
           } catch (e) {
              t.completed = prev; cb.checked = prev; // revert
              row.querySelector('.title').classList.toggle('completed', t.completed);
