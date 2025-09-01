@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>To‑Do — Single Page App</title>
+  <style>
+    /* =========================
+       Design tokens (light/dark)
+       ========================= */
+    :root {
+      --bg: #ffffff;
+      --surface: #f7f8fa;
+      --text: #1b1f24;
+      --muted: #606770;
+      --primary: #3b82f6;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --ring: #94c0ff;
+      --shadow: 0 6px 20px rgba(0,0,0,.06);
+      --radius: 12px;
+      --space: 8px; /* 8pt grid */
+    }
+    html[data-theme="dark"] {
+      --bg: #0f1115;
+      --surface: #151a21;
+      --text: #e6e8eb;
+      --muted: #9096a1;
+      --primary: #3b82f6;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --ring: #2563eb;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+
+    /* ============ Base ============ */
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font: 16px/1.5 Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      background: var(--bg);
+      color: var(--text);
+    }
+    a { color: var(--primary); text-decoration: none; }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: calc(var(--space) * 3) var(--space);
+    }
+
+    /* ============ Top bar ============ */
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--bg);
+      border-bottom: 1px solid rgba(0,0,0,.06);
+      backdrop-filter: saturate(180%) blur(6px);
+      padding: calc(var(--space) * 2) var(--space);
+    }
+    .brand { font-weight: 700; letter-spacing: 0.2px; }
+    .icon-btn {
+      height: 36px; min-width: 36px; padding: 0 10px; border-radius: 999px;
+      display: inline-flex; align-items: center; gap: 8px; justify-content: center;
+      border: 1px solid rgba(0,0,0,.08); background: var(--surface); color: var(--text);
+      box-shadow: var(--shadow);
+      cursor: pointer;
+    }
+    .icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+    /* ============ Card surfaces ============ */
+    .card { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); }
+
+    /* ============ Composer ============ */
+    .composer { display: grid; grid-template-columns: 1fr auto; gap: var(--space); padding: var(--space); }
+    .input {
+      height: 48px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(0,0,0,.1);
+      background: #fff; color: #111;
+    }
+    html[data-theme="dark"] .input { background: #0c0f14; color: var(--text); border-color: rgba(255,255,255,.08); }
+    .input:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+    .btn-primary { height: 48px; padding: 0 18px; border-radius: 10px; border: none; cursor: pointer; background: var(--primary); color: #fff; font-weight: 600; }
+    .btn-primary:disabled { opacity: .6; cursor: not-allowed; }
+
+    /* ============ Controls row ============ */
+    .controls { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space); align-items: center; padding: var(--space); margin-top: var(--space); }
+    .segmented { display: inline-flex; background: rgba(0,0,0,.05); border-radius: 999px; padding: 3px; }
+    html[data-theme="dark"] .segmented { background: rgba(255,255,255,.06); }
+    .segmented button { border: none; background: transparent; padding: 8px 12px; border-radius: 999px; cursor: pointer; color: var(--muted); }
+    .segmented button.active { background: var(--bg); color: var(--text); box-shadow: var(--shadow); }
+
+    .search { position: relative; }
+    .search input { width: 100%; height: 40px; border-radius: 999px; padding: 0 36px 0 12px; border: 1px solid rgba(0,0,0,.08); background: #fff; color: #111; }
+    html[data-theme="dark"] .search input { background: #0c0f14; color: var(--text); border-color: rgba(255,255,255,.08); }
+    .search .clear { position: absolute; right: 6px; top: 6px; height: 28px; width: 28px; border-radius: 999px; border: none; background: transparent; color: var(--muted); cursor: pointer; }
+
+    .btn-secondary { height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(0,0,0,.1); background: transparent; color: var(--text); cursor: pointer; }
+    .btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ============ List ============ */
+    .list { margin-top: var(--space); padding: var(--space); }
+    .row { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center; padding: 10px; border-radius: 10px; }
+    .row:hover { background: rgba(0,0,0,.03); }
+    html[data-theme="dark"] .row:hover { background: rgba(255,255,255,.03); }
+    .title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .title.completed { text-decoration: line-through; opacity: 0.7; }
+    .row-actions { display: inline-flex; gap: 6px; }
+
+    .checkbox { appearance: none; width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid rgba(0,0,0,.35); display: grid; place-content: center; cursor: pointer; }
+    html[data-theme="dark"] .checkbox { border-color: rgba(255,255,255,.5); }
+    .checkbox:checked { background: var(--ok); border-color: var(--ok); }
+
+    .icon { width: 18px; height: 18px; display: inline-block; }
+    .icon-btn-mini { border: none; background: transparent; cursor: pointer; padding: 6px; border-radius: 8px; color: var(--muted); }
+    .icon-btn-mini:hover { background: rgba(0,0,0,.06); color: var(--text); }
+    html[data-theme="dark"] .icon-btn-mini:hover { background: rgba(255,255,255,.06); }
+
+    .meta { padding: var(--space); color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; }
+
+    /* Two-column layout: task list + chat side-by-side on wide screens */
+    .columns { display: grid; grid-template-columns: 1fr 360px; gap: calc(var(--space) * 1.5); align-items: start; margin-top: var(--space); }
+    @media (max-width: 880px) { .columns { grid-template-columns: 1fr; } }
+
+    /* ============ Snackbar ============ */
+    .snackbar { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--surface); color: var(--text); border-radius: 999px; box-shadow: var(--shadow); padding: 10px 14px; display: none; align-items: center; gap: 12px; }
+    .snackbar.show { display: inline-flex; }
+    .snackbar button { border: none; background: transparent; color: var(--primary); cursor: pointer; font-weight: 600; }
+
+    /* ============ Empty state & skeleton ============ */
+    .empty { padding: 24px; text-align: center; color: var(--muted); }
+    .skeleton { height: 56px; border-radius: 10px; background: linear-gradient(90deg, rgba(0,0,0,.06), rgba(0,0,0,.12), rgba(0,0,0,.06)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+    html[data-theme="dark"] .skeleton { background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.12), rgba(255,255,255,.06)); }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+      
+    /* ============ Chatbot ============ */
+    .chat { padding: var(--space); margin-top: var(--space); display: grid; gap: var(--space); }
+    .chat-messages { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: var(--space); }
+    .chat-row { display: flex; }
+    .chat-row .bubble { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(0,0,0,.08); background: var(--bg); max-width: 100%; }
+    .chat-row.user { justify-content: flex-end; }
+    .chat-row.user .bubble { background: var(--primary); color: #fff; border-color: transparent; }
+    .chat-row.assistant .bubble { background: var(--surface); color: var(--text); }
+    .chat-composer { display: grid; grid-template-columns: 1fr auto; gap: var(--space); }
+    .chat-hint { font-size: 12px; color: var(--muted); }
+    pre.bubble { white-space: pre-wrap; overflow-x: auto; }
+    .pill { display:inline-block; font-size:12px; padding:2px 6px; margin-right:6px; border-radius:999px; background: rgba(0,0,0,.06); color: var(--muted); }
+    html[data-theme="dark"] .pill { background: rgba(255,255,255,.06); }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">To‑Do</div>
+    <button id="themeToggle" class="icon-btn" aria-label="Toggle theme">🌓 Theme</button>
+  </header>
+
+  <main class="container">
+    <!-- Composer -->
+    <section class="card composer" aria-label="New task">
+      <input id="newTitle" class="input" type="text" placeholder="Add a task (e.g., ‘Buy milk’)" maxlength="200" />
+      <button id="addBtn" type="button" class="btn-primary">Add</button>
+    </section>
+
+    <!-- Controls row -->
+    <section class="card controls">
+      <div class="segmented" role="tablist" aria-label="Filters">
+        <button type="button" class="active" data-filter="all" role="tab" aria-selected="true">All</button>
+        <button type="button" data-filter="active" role="tab" aria-selected="false">Active</button>
+        <button type="button" data-filter="completed" role="tab" aria-selected="false">Completed</button>
+      </div>
+      <div class="search">
+        <input id="search" type="search" placeholder="Search…" aria-label="Search tasks" />
+        <button id="clearSearch" type="button" class="clear" title="Clear">✕</button>
+      </div>
+      <button id="clearCompleted" type="button" class="btn-secondary" disabled>Clear completed</button>
+    </section>
+
+    <div class="columns">
+      <!-- Task list -->
+      <section id="listCard" class="card list" aria-live="polite">
+        <div id="list"></div>
+      </section>
+
+      <!-- Chat Assistant -->
+      <section class="card chat" aria-label="Chat assistant">
+        <div id="chatLog" class="chat-messages" role="log" aria-live="polite" aria-label="Conversation"></div>
+        <div class="chat-composer">
+          <input id="chatInput" class="input" type="text" placeholder="Try: 'add buy milk', 'complete task 1', 'show my tasks'" />
+          <button id="chatSend" type="button" class="btn-primary">Ask</button>
+        </div>
+        <div class="chat-hint">Uses numeric IDs shown as <strong>#N</strong>. The assistant translates your text to function calls and executes them.</div>
+      </section>
+    </div>
+
+    <div class="meta">
+      <span id="count">0 items</span>
+      <span>Powered by <a href="#" tabindex="-1">Flask API</a></span>
+    </div>
+
+  </main>
+
+  <!-- Snackbar (Undo) -->
+  <div id="snackbar" class="snackbar" role="status" aria-live="polite">
+    <span id="snackbarMsg"></span>
+    <button id="snackbarAction" type="button" style="display:none"></button>
+  </div>
+
+  <script>
+    // ============================
+    // Config
+    // ============================
+    // If the page is opened from the filesystem (file://) or from an origin that is not
+    // the API host, default to the local Flask API on 127.0.0.1:5000 for development.
+    const API_BASE = (
+      location.hostname === 'localhost' ||
+      location.hostname === '127.0.0.1' ||
+      location.hostname === '' || // file:// -> hostname is empty
+      location.protocol === 'file:'
+    ) ? 'http://127.0.0.1:5000' : '';
+
+    // Helper to build full request URLs robustly across origins
+    const fullUrl = (path) => API_BASE ? (API_BASE + path) : new URL(path, location.origin).toString();
+
+    const API = {
+      list: (params = {}) => {
+        const u = new URL(fullUrl('/v1/tasks'));
+        if (params.completed !== undefined && params.completed !== 'all') u.searchParams.set('completed', params.completed);
+        u.searchParams.set('sort', '-created_at');
+        return fetch(u.toString());
+      },
+      add: (title) => fetch(fullUrl('/v1/tasks'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title })
+      }),
+      toggle: (id, completed) => fetch(fullUrl('/v1/tasks/' + encodeURIComponent(id)), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed })
+      }),
+      del: (id) => fetch(fullUrl('/v1/tasks/' + encodeURIComponent(id)), { method: 'DELETE' }),
+      chat: (message) => fetch(fullUrl('/v1/chat'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      })
+     };
+
+    // ============================
+    // State
+    // ============================
+    let tasks = [];              // canonical cache from server
+    let filter = 'all';          // 'all' | 'active' | 'completed'
+    let searchTerm = '';
+    let lastDeleted = null;      // for snackbar undo (single item)
+
+    // ============================
+    // Utilities
+    // ============================
+    const qs = (sel, el=document) => el.querySelector(sel);
+    const qsa = (sel, el=document) => Array.from(el.querySelectorAll(sel));
+    const debounce = (fn, ms=200) => { let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); }; };
+
+    function showSnackbar(msg, actionLabel, onAction) {
+      const bar = qs('#snackbar');
+      const text = qs('#snackbarMsg');
+      const action = qs('#snackbarAction');
+      text.textContent = msg;
+      if (actionLabel && onAction) {
+        action.textContent = actionLabel;
+        action.style.display = 'inline';
+        action.onclick = () => { onAction(); hide(); };
+      } else {
+        action.style.display = 'none';
+        action.onclick = null;
+      }
+      bar.classList.add('show');
+      let timer = setTimeout(hide, 5000);
+      function hide(){ bar.classList.remove('show'); clearTimeout(timer); }
+    }
+
+    function setTheme(mode) {
+      document.documentElement.setAttribute('data-theme', mode);
+      localStorage.setItem('todo.theme', mode);
+    }
+
+    function initTheme() {
+      const stored = localStorage.getItem('todo.theme');
+      setTheme(stored || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+    }
+
+    // ============================
+    // Rendering
+    // ============================
+    function render() {
+      const list = qs('#list');
+      list.innerHTML = '';
+
+      // derived set according to filter & search
+      const filtered = tasks.filter(t => {
+        if (filter === 'active' && t.completed) return false;
+        if (filter === 'completed' && !t.completed) return false;
+        if (searchTerm) return t.title.toLowerCase().includes(searchTerm);
+        return true;
+      });
+
+      // Count + clear-completed button
+      qs('#count').textContent = `${filtered.length} item${filtered.length!==1?'s':''}`;
+      const hasCompleted = tasks.some(t => t.completed);
+      qs('#clearCompleted').disabled = !hasCompleted;
+
+      if (filtered.length === 0) {
+        list.innerHTML = `<div class="empty">${searchTerm ? 'Nothing matches your filters.' : 'No tasks yet.'}</div>`;
+        return;
+      }
+
+      for (const t of filtered) {
+        const row = document.createElement('div');
+        row.className = 'row'; row.setAttribute('role','listitem');
+
+        // checkbox
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.className = 'checkbox'; cb.checked = !!t.completed;
+        cb.setAttribute('aria-label', 'Toggle completed');
+        cb.addEventListener('change', async () => {
+          const prev = t.completed;
+          t.completed = cb.checked; // optimistic
+          row.querySelector('.title').classList.toggle('completed', t.completed);
+          try {
+            const r = await API.toggle(t.id, t.completed);
+            if (!r.ok) throw new Error('toggle failed');
+            // Update the single task from server response (avoid full refresh)
+            const updated = await r.json();
+            const idx = tasks.findIndex(x => x.id === updated.id);
+            if (idx !== -1) tasks[idx] = updated;
+            // If current filter hides this task now, re-render to remove it
+            if ((filter === 'active' && updated.completed) || (filter === 'completed' && !updated.completed)) {
+              render();
+            } else {
+              // Otherwise update row UI only
+              row.querySelector('.title').classList.toggle('completed', updated.completed);
+            }
+          } catch (e) {
+             t.completed = prev; cb.checked = prev; // revert
+             row.querySelector('.title').classList.toggle('completed', t.completed);
+             showSnackbar('Could not update task.');
+           }
+         });
+
+        // title
+        const span = document.createElement('div');
+        span.className = 'title' + (t.completed ? ' completed' : '');
+        span.textContent = t.title;
+        if (t.short_id !== undefined) {
+          const pill = document.createElement('span');
+          pill.className = 'pill';
+          pill.textContent = '#' + t.short_id;
+          span.prepend(pill);
+        }
+
+        // actions (delete only in v1)
+        const actions = document.createElement('div');
+        actions.className = 'row-actions';
+        const del = document.createElement('button');
+        del.className = 'icon-btn-mini'; del.title = 'Delete'; del.innerHTML = '🗑️';
+        del.type = 'button';
+        del.addEventListener('click', () => onDelete(t));
+        actions.appendChild(del);
+
+        row.appendChild(cb);
+        row.appendChild(span);
+        row.appendChild(actions);
+        list.appendChild(row);
+      }
+    }
+
+    // ============================
+    // CRUD handlers
+    // ============================
+    async function refresh() {
+      // skeleton state
+      const list = qs('#list');
+      list.innerHTML = '';
+      for (let i=0;i<3;i++) { const s = document.createElement('div'); s.className='skeleton'; list.appendChild(s); }
+      try {
+        const r = await API.list({ completed: filter === 'all' ? 'all' : (filter === 'completed') });
+        if (!r.ok) throw new Error('list failed');
+        const data = await r.json();
+        tasks = data.items || [];
+      } catch (e) {
+        tasks = [];
+        showSnackbar('Could not load tasks.');
+      }
+      render();
+    }
+
+    async function onAdd() {
+      const input = qs('#newTitle');
+      const title = (input.value || '').trim();
+      if (!title) return;
+      input.disabled = true; qs('#addBtn').disabled = true;
+      try {
+        const r = await API.add(title);
+        if (!r.ok) throw new Error('add failed');
+        const created = await r.json();
+        // Optimistically add to local cache and re-render
+        tasks.unshift(created);
+        input.value = '';
+        render();
+      } catch (e) {
+        showSnackbar('Could not add task.');
+      } finally {
+        input.disabled = false; qs('#addBtn').disabled = false; input.focus();
+      }
+    }
+
+    async function onDelete(task) {
+      // optimistic remove
+      const prevTasks = tasks.slice();
+      tasks = tasks.filter(t => t.id !== task.id);
+      render();
+      try {
+        const r = await API.del(task.id);
+        if (!r.ok) throw new Error('delete failed');
+        lastDeleted = task; // enable undo
+        showSnackbar('Task deleted.', 'Undo', async () => {
+          // Undo by re-adding (ID will differ; acceptable for demo)
+          await API.add(task.title);
+          lastDeleted = null;
+          await refresh();
+        });
+      } catch (e) {
+        tasks = prevTasks; render();
+        showSnackbar('Could not delete task.');
+      }
+    }
+
+    async function onClearCompleted() {
+      const completed = tasks.filter(t => t.completed);
+      if (completed.length === 0) return;
+      const prev = tasks.slice();
+      // optimistic remove
+      tasks = tasks.filter(t => !t.completed);
+      render();
+      try {
+        // fire deletes sequentially to keep it simple (could batch with Promise.all)
+        for (const t of completed) {
+          const r = await API.del(t.id);
+          if (!r.ok) throw new Error('clear failed');
+        }
+        showSnackbar(`Cleared ${completed.length} task${completed.length!==1?'s':''}.`);
+      } catch (e) {
+        tasks = prev; render();
+        showSnackbar('Could not clear completed.');
+      }
+    }
+
+    // ============================
+    // Chat assistant
+    // ============================
+    function addMessage(role, text, pre=false) {
+      const log = qs('#chatLog');
+      const row = document.createElement('div');
+      row.className = 'chat-row ' + role;
+      const bubble = document.createElement(pre ? 'pre' : 'div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      row.appendChild(bubble);
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function summarize(tool, result) {
+      if (!tool || !tool.function) return 'No tool recognized.';
+      const fn = tool.function;
+      if (fn === 'addTask' && result && result.title) return `Added: ${result.title} (#${result.short_id})`;
+      if (fn === 'viewTasks' && result && Array.isArray(result.items)) return `You have ${result.items.length} task(s).`;
+      if (fn === 'completeTask' && result && result.title) return `Completed: ${result.title} (#${result.short_id})`;
+      if (fn === 'deleteTask' && result && result.deleted) return `Deleted task #${result.short_id}`;
+      return 'Done.';
+    }
+
+    async function onChatSend() {
+      const input = qs('#chatInput');
+      const msg = (input.value || '').trim();
+      if (!msg) return;
+      addMessage('user', msg);
+      input.value = '';
+      qs('#chatSend').disabled = true;
+      try {
+        const r = await API.chat(msg);
+        if (!r.ok) {
+          const text = await r.text();
+          throw new Error(text || 'chat failed');
+        }
+        const data = await r.json();
+        addMessage('assistant', JSON.stringify(data.tool_request, null, 2), true);
+        addMessage('assistant', summarize(data.tool_request, data.result));
+        const fn = data.tool_request && data.tool_request.function;
+        if (fn === 'addTask' || fn === 'completeTask' || fn === 'deleteTask') {
+          await refresh();
+        } else if (fn === 'viewTasks') {
+          const lines = (data.result.items || []).map(t => `#${t.short_id} ${t.completed ? '[x]' : '[ ]'} ${t.title}`);
+          if (lines.length) addMessage('assistant', lines.join(''), true);
+        }
+      } catch (e) {
+        showSnackbar('Chat error.');
+        addMessage('assistant', 'Chat error: ' + (e.message || e), false);
+      } finally {
+        qs('#chatSend').disabled = false;
+        input.focus();
+      }
+    }
+
+    // ============================
+    // Event wiring
+    // ============================
+    function wire() {
+      // Add
+      qs('#addBtn').addEventListener('click', onAdd);
+       qs('#newTitle').addEventListener('keydown', e => { if (e.key === 'Enter') onAdd(); });
+
+      // Filters
+      qsa('.segmented button').forEach(btn => btn.addEventListener('click', async () => {
+        qsa('.segmented button').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
+        btn.classList.add('active'); btn.setAttribute('aria-selected','true');
+        filter = btn.dataset.filter;
+        await refresh();
+      }));
+
+      // Search (client-side)
+      const onSearch = debounce(() => { searchTerm = qs('#search').value.trim().toLowerCase(); render(); }, 200);
+      qs('#search').addEventListener('input', onSearch);
+      qs('#clearSearch').addEventListener('click', () => { qs('#search').value=''; searchTerm=''; render(); });
+
+      // Clear completed
+      qs('#clearCompleted').addEventListener('click', onClearCompleted);
+
+      // Theme
+      initTheme();
+      qs('#themeToggle').addEventListener('click', () => {
+        const mode = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        setTheme(mode);
+      });
+
+      // Chat
+      const chatInput = qs('#chatInput');
+      const chatSend = qs('#chatSend');
+      if (chatInput && chatSend) {
+        chatSend.addEventListener('click', onChatSend);
+        chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') onChatSend(); });
+      }
+    }
+
+    // ============================
+    // Boot
+    // ============================
+    wire();
+    refresh();
+  </script>
+</body>
+</html>
