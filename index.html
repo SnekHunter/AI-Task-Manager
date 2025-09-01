@@ -422,6 +422,9 @@
       try {
         const r = await API.del(task.id);
         if (!r.ok) throw new Error('delete failed');
+        // Re-number local short_id values to stay in sync with server renumbering
+        tasks.forEach((t, i) => { t.short_id = i + 1; });
+        render();
         lastDeleted = task; // enable undo
         showSnackbar('Task deleted.', 'Undo', async () => {
           // Undo by re-adding (ID will differ; acceptable for demo)
@@ -489,6 +492,14 @@
       qs('#chatSend').disabled = true;
       try {
         const r = await API.chat(msg);
+        if (r.status === 501) {
+          // Server not configured for chat
+          let body = null;
+          try { body = await r.json(); } catch (_) { body = await r.text(); }
+          showSnackbar('Chat not configured.');
+          addMessage('assistant', typeof body === 'string' ? body : JSON.stringify(body), true);
+          return;
+        }
         if (!r.ok) {
           const text = await r.text();
           throw new Error(text || 'chat failed');

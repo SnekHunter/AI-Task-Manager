@@ -196,7 +196,8 @@ def create_task():
 
     resp = jsonify(task)
     resp.status_code = 201
-    resp.headers["Location"] = url_for("get_tasks", _external=False) + f"/{task['id']}"
+    # Provide Location for the newly created resource (single-item GET implemented below)
+    resp.headers["Location"] = url_for("get_task", task_id=task['id'], _external=False)
     return resp
 
 
@@ -230,6 +231,15 @@ def get_tasks():
     items = items[offset : offset + limit]
 
     return jsonify({"items": items, "page": {"limit": limit, "offset": offset, "total": total}})
+
+
+# ---- Get single task -----------------------------------------------------
+@app.get("/v1/tasks/<task_id>")
+def get_task(task_id: str):
+    idx = find_task_index(task_id)
+    if idx == -1:
+        abort(404, description="task not found")
+    return jsonify(TASKS[idx])
 
 
 # ---- Mark task as complete/incomplete (idempotent) ------------------------
@@ -284,7 +294,8 @@ def chat_translate_and_execute():
       {"function": "addTask", "parameters": {"description": "buy milk"}}
     """
     if client is None:
-        abort(500, description="OpenAI client not initialized. Set OPENAI_API_KEY and install openai.")
+        # Service not implemented without OpenAI configured
+        abort(501, description="OpenAI client not initialized. Set OPENAI_API_KEY and install openai.")
 
     data = request.get_json(force=True, silent=True) or {}
     user_text = (data.get("message") or "").strip()
@@ -314,10 +325,21 @@ def chat_translate_and_execute():
         tool_req = json.loads(text)
     except Exception:
         abort(500, description="Model did not return valid JSON.")
+    
+    # Basic schema checks for safety
+    if not isinstance(tool_req, dict):
+        abort(500, description="Model output is not a JSON object.")
+    if "function" not in tool_req or not isinstance(tool_req.get("function"), str):
+        abort(500, description="Model JSON missing 'function' string.")
+    params = tool_req.get("parameters", {})
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        abort(500, description="Model 'parameters' must be an object.")
 
     # Validate tool request
     func = tool_req.get("function")
-    params = tool_req.get("parameters", {})
+    params = params
     if func not in {"addTask", "viewTasks", "completeTask", "deleteTask"}:
         abort(400, description="Unsupported function from model.")
 
